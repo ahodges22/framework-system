@@ -1,111 +1,63 @@
 name: CI
 on:
   push:
+    branches:
+      - main
 
 jobs:
-  freebsd-cross-build:
-    name: Cross-Build for FreeBSD
-    runs-on: 'ubuntu-24.04'
-    env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: true
+  build-and-release:
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libudev-dev libhidapi-dev
+      - name: Compute short SHA
+        id: short-commit
+        run: echo "SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_OUTPUT
 
-    - name: Setup Rust toolchain
-      run: |
-        rm rust-toolchain.toml
-        rustup toolchain install 1.75.0-x86_64-unknown-freebsd
-        rustup show
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Install cross compilation tool
-      run: cargo install cross
+      - name: Install system dependencies for hidapi
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
 
-    - name: Build FreeBSD tool
-      run: cross build --target=x86_64-unknown-freebsd --no-default-features --features cross_freebsd
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
 
-    - name: Upload FreeBSD App
-      uses: actions/upload-artifact@v4
-      with:
-        name: framework_tool_freebsd
-        path: target/x86_64-unknown-freebsd/debug/framework_tool
+      - name: Run fmt
+        run: cargo fmt --all --check
 
-  build:
-    name: Build Linux and UEFI
-    runs-on: ubuntu-24.04
-    env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: true
-    steps:
-    - uses: actions/checkout@v4
+      - name: Build debug (all)
+        run: cargo build
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libudev-dev
+      - name: Build library
+        run: cargo build -p framework_lib
 
-    - name: Setup Rust toolchain
-      run: rustup show
+      - name: Build tool
+        run: cargo build -p framework_tool
 
-    - name: Build library (Linux)
-      run: cargo build -p framework_lib
+      - name: List debug tool binary
+        run: ls -l target/debug/framework_tool
 
-    - name: Build Linux tool
-      run: cargo build -p framework_tool
+      - name: Build UEFI application (no ESP)
+        run: make -C framework_uefi build/x86_64-unknown-uefi/boot.efi
 
-    - name: Check if Linux tool can start
-      run: cargo run -- --help
+      - name: List UEFI artifact
+        run: ls -l framework_uefi/build/x86_64-unknown-uefi/boot.efi
 
-    - name: Upload Linux App
-      uses: actions/upload-artifact@v4
-      with:
-        name: framework_tool
-        path: target/debug/framework_tool
+      - name: Build release
+        run: cargo build --release
 
-    - name: Build UEFI application (no ESP)
-      run: make -C framework_uefi build/x86_64-unknown-uefi/boot.efi
-
-    - name: Upload UEFI App
-      uses: actions/upload-artifact@v4
-      with:
-        name: framework.efi
-        path: framework_uefi/build/x86_64-unknown-uefi/boot.efi
-
-    - name: Install mtools to build ESP (Linux)
-      run: sudo apt-get install -y mtools
-
-    - name: Build ESP (Linux)
-      run: make -C framework_uefi
-
-  build-windows:
-    name: Build Windows
-    runs-on: windows-2022
-    env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: true
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Setup Rust toolchain
-      run: rustup show
-
-    - name: Build library (Windows)
-      run: cargo build -p framework_lib --no-default-features --features "windows"
-
-    - name: Build Windows tool
-      run: cargo build -p framework_tool --no-default-features --features "windows"
-
-    - name: Check if Windows tool can start
-      run: cargo run --no-default-features --features "windows" -- --help
-
-    - name: Upload Windows App
-      uses: actions/upload-artifact@v4
-      with:
-        name: framework_tool.exe
-        path: target/debug/framework_tool.exe
-
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.short-commit.outputs.SHORT_SHA }}
+          body: "Automated release from commit ${{ steps.short-commit.outputs.SHORT_SHA }}"
+          draft: false
+          prerelease: false
+          files: |
+            target/release/framework_tool
+            framework_uefi/build/x86_64-unknown-uefi/boot.efi
 
   test:
     name: Test Suite
